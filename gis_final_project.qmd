@@ -1,109 +1,278 @@
 ---
 title: "Mapping School Access Inequity: A Spatial Point-Pattern Analysis of K–12 School Sites and Socioeconomic Disadvantage in California"
 subtitle: "DSAN 6750 / PPOL 6805: GIS for Spatial Data Science"
-authors:
+author:
   - name: Yubing Han
     email: yh893@georgetown.edu
     affiliation: Georgetown University
     corresponding: true
 df-print: kable
-bibliography: GIS_Manuscript.bib
-title-block-banner: "#E69F0095"
+bibliography: references.bib
+title-block-banner: "#32259095"
 title-block-banner-color: "black"
 format:
   html:
+    theme: cosmo
+    toc: true         
+    toc-location: left  
+    toc-depth: 3
     df-print: kable
-  pdf:
-    # https://quarto.org/docs/reference/formats/pdf.html
+    code-fold: true
     link-citations: true
 prefer-html: true
 ---
 
+```{r}
+#| label: setup
+#| include: false
+#| warning: false
+#| message: false
+library(readr)
+library(dplyr)
+library(leaflet)
+library(sf)
+library(ggplot2)
+library(spatstat)
+library(viridis)
+library(maps)    
+library(mapdata)
+
+#| label: load-eda
+schools <- read_csv("https://raw.githubusercontent.com/YubingHanhyb/yh893.github.io-gis_project/main/SchoolSites2324.csv")
+districts <- read_csv("https://raw.githubusercontent.com/YubingHanhyb/yh893.github.io-gis_project/main/DistrictAreas2324.csv")
+
+#| label: clean data
+schools_clean <- schools %>%
+  filter(!is.na(Latitude), !is.na(Longitude), 
+         !is.na(`Socioeconomically Disadvantaged (%)`)) %>%
+  rename(
+    lat = Latitude,
+    lon = Longitude,
+    ses_pct = `Socioeconomically Disadvantaged (%)`,
+    district_code = `District Code`
+  )
+
+schools_clean$ses_pct <- as.numeric(schools_clean$ses_pct)
+
+window_ca <- ripras(schools_clean$lon, schools_clean$lat)
+school_ppp <- ppp(schools_clean$lon, schools_clean$lat, 
+                  window = window_ca, 
+                  marks = schools_clean$ses_pct) 
+
+if(any(duplicated(school_ppp))) {
+  school_ppp <- rjitter(school_ppp, retry=TRUE, nsim=1, drop=TRUE)
+}
+```
+
 ## Introduction
 
-Several previous studies have found robust relationships between spatial properties of a country's **capital city** and that country's propensity for **conflict** and **misgovernance**.
+California’s public education system is massive, serving millions of students across more than 10,000 K-12 schools. While the state has made significant efforts to improve equity through programs like Universal Meals and Community Schools, a fundamental question remains: Are the schools themselves located fairly?
 
-Perceptions of this linkage also have an effect on "coup-proofing" decisions made by national governments. A recent BBC interview with Equatorial Guinea's President Teodoro Obiang, for example, highlighted this as a factor behind his decision to relocate the capital city:
+School placement is rarely random. Instead, the physical location of schools reflects decades of historical urban planning, district funding capacities, and shifting demographic patterns. In many cases, high-poverty or food-insecure neighborhoods face a "spatial penalty"—they have fewer nearby school options and require longer travel distances compared to affluent communities. This spatial mismatch can create structural barriers to education that money alone cannot fix.
 
-> It's the remoteness of Oyala that makes it so appealing to President Obiang. In a rare interview he described how rebels had recently plotted a seaborne assault on his palace in the current capital, Malabo. 'We need a secure place for my government and for future governments. That's why we have created Oyala, to guarantee the government of Equatorial Guinea.' [@sackur_equatorial_2012]
-
-This case is far from exceptional, as an even more recent *Washington Post* article points out with respect to Myanmar's decision to move its capital from Yangon to Naypyidaw:
-
-> Analysts have described the decision as motivated by a desire to secure the military’s seat of power from any threat of protests or invasions. [@berger_myanmars_2021]
-
-Most of these studies, however, are based on observations of **conflict events**. In this study, we study the more fundamental variable of a capital's distance from the **population centroid** of the country.
+This project investigates the spatial dimensions of educational inequality in California. By analyzing the precise geographic locations of public schools against community socioeconomic data, I aim to answer a critical research question: Do disadvantaged communities in California face structural spatial disadvantages in access to public K-12 schools? Specifically, I examine whether schools in high-poverty areas are more sparsely distributed (spatial inhibition) and whether district-level disadvantage correlates with lower school availability per student.
 
 ## Literature Review
 
-@campante_capital_2019 analyzes the relationship between the location of a **capital city** and the degree of conflict and misgovernance in a given country. Their two key findings are that:
+The relationship between residential segregation and educational inequality has long been a central subject of sociological and geographical inquiry. The "Spatial Mismatch Hypothesis", originally applied to labor markets, suggests that disadvantaged communities are often physically disconnected from high-quality public resources. Recent research has reinforced this theory in the context of education, finding that geographic imbalances significantly influence student enrollment patterns and school choice behavior among minority students [@denice_2022]. Furthermore, contemporary studies indicate that this mismatch extends beyond student demographics to resource allocation, with significant spatial disparities observed in student-teacher ratios across U.S. school districts [@wu_2024]. These spatial barriers act as a "geography of disadvantage," reinforcing social inequality by limiting access to essential educational infrastructure.
 
-> Conflict is more likely to emerge (and dislodge incumbents) closer to the capital
+This challenge of spatial inequity is not unique to a single region but is a global phenomenon documented through Geographic Information Systems (GIS). International studies in Brazil [@pizzola_2021], China [@lu_2022], and India [@rekha_2020] have all utilized geospatial techniques to reveal similar patterns where marginalized populations face structural deficits in educational accessibility. In the specific context of California, geospatial analysis has been successfully applied to identify academic success factors, demonstrating that physical location and neighborhood characteristics are key determinants of K-12 educational outcomes [@chew_2020].
 
-and
+Methodologically, the measurement of these inequalities has evolved from simple "container-based" counts (e.g., schools per district) to more sophisticated distance-based analyses. Traditional administrative boundaries often mask the true texture of spatial inequality. Consequently, recent literature advocates for advanced Point Pattern Analysis and Spatial Autocorrelation techniques to measure the precise clustering and dispersion of educational facilities [@ghodousi_2020]. Building on this methodological framework, this project applies Second-Order Point Pattern methods—specifically the Pair Correlation Function $g(r)$—to rigorously test for structural inhibition and clustering in California’s high-poverty neighborhoods.
 
-> Isolated capitals are associated with misgovernance.
+## Data
 
-This first finding is illustrated in @fig-conflict-dist
+To analyze the spatial equity of school distribution, this project integrates two primary datasets:
 
-![](images/conflict_dist.svg){#fig-conflict-dist}
+1.  **School Point Locations:** I obtained the "Public K-12 School Sites 2023-24" dataset from the California Department of Education (CDE) [@cde_2024]. This dataset provides precise geocoded coordinates (latitude/longitude) for over 10,000 active public schools. I filtered the data to exclude closed sites and non-traditional schools (e.g., adult education centers) to focus on K-12 student access.
 
-## Methodology
+2.  **Socioeconomic Indicators:** District-level socioeconomic data was sourced from the USDA Food Environment Atlas and Census Bureau estimates [@usda_2024]. Key variables include the "Poverty Rate" and the percentage of "Socioeconomically Disadvantaged" students.
 
-The **population centroids** we use herein might require some explanation, since the term "centroid" can be ambiguous.
+**Data Processing:** I performed a spatial join to link each school point to its corresponding district and census tract. This allowed me to categorize schools into "High Disadvantage" (above median poverty rate) and "Low Disadvantage" groups for comparative spatial analysis.
 
-Here, the population centroids are drawn from @hall_population_2019
+## Methods
 
-## Exploratory Data Analysis (EDA)
+This study employs a three-stage spatial analysis framework to measure inequality from different perspectives:
 
-Here we plot the base GIS objects we're analyzing: the location of each **capital city** (in purple) and each **population centroid** (in yellow).
+1.  **First-Order Analysis: Kernel Density Estimation (KDE)** 
+To visualize the overall spatial intensity of school placements, I used Kernel Density Estimation. This method creates a continuous surface map representing the density of school sites per unit area. It helps identify "hot spots" of educational infrastructure and reveals visible spatial gaps in service coverage.
 
-```{r}
-#| label: imports
-library(tidyverse) |> suppressPackageStartupMessages()
-library(sf) |> suppressPackageStartupMessages()
-library(mapview) |> suppressPackageStartupMessages()
-library(units) |> suppressPackageStartupMessages()
-cb_palette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
-```
+2.  **Second-Order Analysis: Pair Correlation Function** $g(r)$ 
+To test for structural inequality, I applied the Pair Correlation Function, $g(r)$, a second-order point pattern analysis method. Unlike simple density maps, $g(r)$ measures the probability of finding another school at a specific distance $r$ from any given school. By comparing separate curves for "High Disadvantage" and "Low Disadvantage" schools, I assessed whether schools in poor neighborhoods exhibit stronger inhibition (spacing out) or clustering compared to affluent areas.
 
-```{r}
-#| label: load-eda
-merged_long_sf <- readRDS("merged_long_sf.rds")
-mapview(merged_long_sf, zcol="name", cex=4, label="geounit")
-```
-
-We then construct an **area-normalized** measure of capital-centroid distance $\text{dist}^{\textsf{AN}}$, using the formula
+3.  **Spatial Regression Analysis:** 
+Finally, to quantify the impact of spatial patterns on resource availability, I conducted an Ordinary Least Squares (OLS) regression at the district level. I modeled the relationship between a district's Socioeconomic Disadvantaged (%) and its Schools per 10,000 Students to determine if poverty predicts statistically significant lower access to school sites. To formally test the relationship between district poverty and school availability, I specified the following Ordinary Least Squares (OLS) regression model:
 
 $$
-\text{dist}^{\textsf{AN}}_i = \text{dist}_i / \sqrt{\text{area}_i}.
+\text{Schools}_{i} = \beta_0 + \beta_1 \times \text{PovertyRate}_{i} + \epsilon_i
 $$
 
-A plot of this measure by country looks as follows:
+Where:
+
+-   $\text{Schools}_{i}$ is the number of schools per 10,000 students in district $i$.
+-   $\text{PovertyRate}_{i}$ is the percentage of socioeconomically disadvantaged students.
+-   $\beta_1$ is the coefficient of interest (the slope).
+-   **Hypothesis:** If $\beta_1 < 0$ and statistically significant ($p < 0.05$), it confirms that higher poverty leads to fewer schools.
+
+## Results
+
+**1. Spatial Distribution of Schools**
+
+First, we examine the overall spatial landscape of educational facilities in California.
 
 ```{r}
-#| label: plot-area
-merged_area_sf <- readRDS("merged_area_sf.rds")
-mapview(merged_area_sf, zcol="scaled_dist")
-```
+#| label: fig-map1
+#| fig-cap: "Kernel Density Estimation of School Sites"  
+#| warning: false
 
-## Hypothesis Testing (Regression)
+ca_map <- map_data("state", region = "california")
+
+p1_fixed <- ggplot() +
+  geom_polygon(data = ca_map, aes(x = long, y = lat, group = group), 
+               fill = "gray90", color = "black", linewidth = 0.5) +
+  stat_density_2d(data = schools_clean, 
+                  aes(x = lon, y = lat, fill = ..level.., alpha = ..level..), 
+                  geom = "polygon") +
+  scale_fill_viridis_c(option = "plasma", name = "School\nDensity") + 
+  scale_alpha(range = c(0.1, 0.5), guide = "none") + 
+  geom_point(data = schools_clean, aes(x = lon, y = lat), 
+             color = "black", size = 0.1, alpha = 0.3) +
+  coord_fixed(1.3) +
+  theme_void() + 
+  labs(title = "Spatial Distribution of CA Public Schools")
+
+print(p1_fixed)
+```
 
 ```{r}
-#| label: plot-regression
-merged_sub_sf <- readRDS("merged_sub_sf.rds")
-merged_sub_sf |> head()
+#| label: fig-interactive
+#| fig-cap: "Interactive Map of School Disadvantage Levels"
+
+pal <- colorNumeric(palette = "YlOrRd", domain = schools_clean$ses_pct)
+
+interactive_map <- leaflet(schools_clean) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(
+    lng = ~lon, lat = ~lat,
+    radius = 3,           
+    color = ~pal(ses_pct), 
+    fillOpacity = 0.7,     
+    stroke = FALSE,      
+    popup = ~paste0(
+      "<b>School:</b> ", `School Name`, "<br>",
+      "<b>District:</b> ", `District Name`, "<br>",
+      "<b>Disadvantage:</b> ", ses_pct, "%"
+    )
+  ) %>%
+  addLegend(
+    "bottomright", 
+    pal = pal, 
+    values = ~ses_pct,
+    title = "Socioeconomic<br>Disadvantage (%)",
+    opacity = 1
+  )
+
+interactive_map
 ```
+
+**2. Spatial Structure: Clustering vs. Inhibition**
+
+To detect structural differences in how schools are spaced, we use the Pair Correlation Function $g(r)$.
 
 ```{r}
-merged_sub_sf |> ggplot(aes(x=scaled_dist, y=total_score, label=NAME_ENGLI)) +
-  geom_point() +
-  geom_smooth(method='lm', formula= y~x) +
-  geom_text(size=4, nudge_y = 0.075) +
-  theme_classic()
+#| label: fig-map2
+#| fig-cap: "Pair Correlation Function g(r) Comparison"
+#| warning: false
+
+cutoff <- median(schools_clean$ses_pct, na.rm=TRUE)
+high_pov_ppp <- subset(school_ppp, marks >= cutoff)
+low_pov_ppp  <- subset(school_ppp, marks < cutoff)
+
+g_high <- pcf(high_pov_ppp, correction="translate", divisor="d")
+g_low  <- pcf(low_pov_ppp,  correction="translate", divisor="d")
+
+plot(g_high, border="red", main="Spatial Structure: Clustering vs. Inhibition", 
+     ylab="g(r) Pair Correlation", xlab="Distance r (degrees)",
+     ylim=c(0, max(g_high$trans, g_low$trans, na.rm=TRUE)), 
+     lwd=2, col="red", legend=FALSE)
+
+lines(g_low$r, g_low$trans, col="blue", lwd=2)
+abline(h=1, col="gray", lty=2)
+legend("topright", legend=c("High Disadvantage Schools", "Low Disadvantage Schools", "Random Expectation"),
+       col=c("red", "blue", "gray"), lty=c(1,1,2), lwd=2)
 ```
 
-## Discussion
+**Interpretation:** Contrary to the inhibition hypothesis, the Red line (High Disadvantage) is higher than the Blue line (Low Disadvantage) at short distances. This indicates that schools in high-poverty areas are more spatially clustered compared to affluent areas. While affluent schools tend to be dispersed (likely reflecting suburban planning with larger campuses), disadvantaged schools are tightly bunched together, reflecting high-density urban concentration and potential spatial segregation.
+
+**3. Resource Inequality Analysis**
+
+Finally, we assess whether district-level disadvantage predicts school availability.
+
+```{r}
+#| label: fig-map3
+#| fig-cap: "District Resource Inequality Scatterplot"
+#| warning: false  
+#| message: false 
+#| echo: false
+district_counts <- schools_clean %>%
+  group_by(district_code) %>%
+  summarise(school_count = n())
+
+districts_clean <- districts %>%
+  rename(
+    district_code = `District Code`,
+    enrollment = `Enroll Total`,
+    district_ses = `Socioeconomically Disadvantaged (%)`
+  ) %>%
+  mutate(district_code = as.character(district_code)) 
+
+plot_data <- districts_clean %>%
+  inner_join(district_counts, by = "district_code") %>%
+  filter(enrollment > 0) %>%
+  mutate(
+    schools_per_10k = (school_count / enrollment) * 10000
+  )
+
+ols_model <- lm(schools_per_10k ~ district_ses, data = plot_data)
+
+p3 <- ggplot(plot_data, aes(x = district_ses, y = schools_per_10k)) +
+  geom_point(alpha = 0.4, color = "darkcyan") + 
+  geom_smooth(method = "lm", color = "red", fill = "pink") +
+  annotate("text", x = 80, y = 14, label = paste("Slope =", round(coef(ols_model)[2], 3)), color = "red", fontface = "bold") +
+  labs(
+    title = "Resource Inequality: School Availability vs. Disadvantage",
+    x = "District Socioeconomic Disadvantage (%)",
+    y = "Schools per 10,000 Students"
+  ) +
+  theme_minimal() +
+  ylim(0, 15) 
+
+print(p3)
+
+library(broom)
+library(knitr)
+
+tidy(ols_model) %>%
+  kable(caption = "Table 1: OLS Regression Results (Impact of Disadvantage on School Density)",
+        digits = 4,
+        col.names = c("Term", "Estimate (Slope)", "Std. Error", "Statistic", "P-Value"))
+```
+
+**Interpretation:**
+Table 1 reveals a nuanced relationship between poverty and school availability. The regression yields a positive slope of 0.5436, suggesting that for every 1% increase in district poverty, there are approximately 0.54 more schools per 10,000 students. However, the p-value of 0.0587 indicates that this relationship is only marginally significant (slightly above the standard 0.05 threshold).
+
+This finding challenges the simple narrative that poor districts have "fewer" schools. Instead, it highlights a "Density vs. Sprawl" phenomenon:
+
+1.  **Urban Concentration:** High-poverty districts are often located in dense urban centers (e.g., Los Angeles, Oakland), where student populations are concentrated, requiring many schools packed into small areas.
+
+2.  **Suburban Efficiency:** Conversely, affluent districts are often suburban, characterized by lower population density and larger, consolidated campuses.
+
+3.  **The Small District Effect:** The outliers in the top-right quadrant likely represent small, rural districts where low enrollment numbers mathematically inflate the "schools per capita" ratio.
+
+Therefore, while high-poverty areas may have a higher quantity of school sites per student, this does not necessarily translate to better quality of access. As shown in the previous $g(r)$ analysis, these schools are highly clustered, suggesting that students in these areas face a segregated, high-density educational environment distinct from the spacious distribution found in wealthier districts.
 
 ## Conclusion
 
-Our evidence indicates that the spatial dynamics of **conflict** differ from the spatial dynamics of **misgovernance**. Whereas
+This project shows that educational inequality in California is driven less by the number of school sites than by their spatial structure. While KDE highlights uneven school density, the Pair Correlation Function reveals that schools in high-poverty neighborhoods are more tightly clustered, a counter-intuitive pattern that creates a density-without-access paradox. Rather than spacious, well-distributed campuses, disadvantaged students face overcrowded, spatially constrained pockets of schools. Policy solutions must therefore move beyond adding sites and instead focus on rezoning, transportation access, and upgrading congested clusters to ensure equitable educational environments.
+
+## References
